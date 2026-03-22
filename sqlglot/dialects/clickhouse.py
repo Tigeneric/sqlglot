@@ -69,14 +69,24 @@ def _quantile_sql(self: ClickHouse.Generator, expression: exp.Quantile) -> str:
     return func + args
 
 
+# ClickHouse uses camelCase function names: dateDiff, dateAdd, dateSub
+_CLICKHOUSE_FUNC_NAMES = {
+    "DATE_DIFF": "dateDiff",
+    "DATE_ADD": "dateAdd",
+    "DATE_SUB": "dateSub",
+}
+
+
 def _datetime_delta_sql(name: str) -> t.Callable[[Generator, DATETIME_DELTA], str]:
+    ch_name = _CLICKHOUSE_FUNC_NAMES.get(name, name)
+
     def _delta_sql(self: Generator, expression: DATETIME_DELTA) -> str:
         if not expression.unit:
-            return rename_func(name)(self, expression)
+            return rename_func(ch_name)(self, expression)
 
         return self.func(
-            name,
-            unit_to_var(expression),
+            ch_name,
+            unit_to_str(expression),
             expression.expression,
             expression.this,
             expression.args.get("zone"),
@@ -378,6 +388,7 @@ class ClickHouse(Dialect):
         TRANSFORMS = {
             **generator.Generator.TRANSFORMS,
             exp.AnyValue: rename_func("any"),
+            exp.If: lambda self, e: self.func("if", e.this, e.args.get("true"), e.args.get("false")),
             exp.ApproxDistinct: rename_func("uniq"),
             exp.ArrayDistinct: rename_func("arrayDistinct"),
             exp.ArrayConcat: rename_func("arrayConcat"),
