@@ -308,6 +308,16 @@ class ClickHouseParser(parser.Parser):
         "JAROWINKLERSIMILARITY": exp.JarowinklerSimilarity.from_arg_list,
         "LEVENSHTEINDISTANCE": exp.Levenshtein.from_arg_list,
         "UTCTIMESTAMP": exp.UtcTimestamp.from_arg_list,
+        # ClickHouse type conversion / date functions → proper AST nodes
+        "TODATE": lambda args: exp.Cast(this=seq_get(args, 0), to=exp.DataType(this=exp.DType.DATE)),
+        "TOSTRING": lambda args: exp.Cast(this=seq_get(args, 0), to=exp.DataType(this=exp.DType.TEXT)),
+        "TOINT64": lambda args: exp.Cast(this=seq_get(args, 0), to=exp.DataType(this=exp.DType.BIGINT)),
+        "TODAY": exp.CurrentDate.from_arg_list,
+        "YESTERDAY": lambda args: exp.Sub(
+            this=exp.CurrentDate(),
+            expression=exp.Interval(this=exp.Literal.string("1"), unit=exp.Var(this="DAY")),
+        ),
+        "UNIQEXACT": lambda args: exp.Count(this=exp.Distinct(expressions=args)),
     }
 
     AGG_FUNCTIONS = AGG_FUNCTIONS
@@ -368,6 +378,7 @@ class ClickHouseParser(parser.Parser):
         "TUPLE": lambda self: exp.Struct.from_arg_list(self._parse_function_args(alias=True)),
         "AND": lambda self: exp.and_(*self._parse_function_args(alias=False)),
         "OR": lambda self: exp.or_(*self._parse_function_args(alias=False)),
+        "MULTIIF": lambda self: self._parse_multi_if(),
     }
 
     PROPERTY_PARSERS = {
@@ -730,6 +741,16 @@ class ClickHouseParser(parser.Parser):
             return params
 
         return None
+
+    def _parse_multi_if(self) -> exp.Case:
+        """Parse multiIf(cond1, val1, cond2, val2, ..., default) → CASE expression."""
+        args = self._parse_function_args(alias=False)
+        if len(args) >= 3 and len(args) % 2 == 1:
+            return exp.Case(
+                ifs=[exp.If(this=args[i], true=args[i + 1]) for i in range(0, len(args) - 1, 2)],
+                default=args[-1],
+            )
+        return exp.Anonymous(this="multiIf", expressions=args)
 
     def _parse_quantile(self) -> exp.Quantile:
         this = self._parse_lambda()

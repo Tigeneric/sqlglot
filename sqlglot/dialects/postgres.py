@@ -130,6 +130,35 @@ def _auto_increment_to_serial(expression: exp.Expr) -> exp.Expr:
     return expression
 
 
+# =============================================================================
+# ClickHouse → PostgreSQL Transpilation (AST-based)
+# =============================================================================
+
+
+def _combined_agg_func_to_filter(
+    self: "Postgres.Generator", expression: exp.CombinedAggFunc
+) -> str:
+    """
+    Convert ClickHouse CombinedAggFunc (sumIf, avgIf, etc.) via AST.
+
+    Builds exp.Filter AST node so the generator renders dialect-correct syntax.
+    """
+    agg_name = expression.this  # e.g. "sumIf", "avgIf", "countIf"
+    pg_func = agg_name[:-2].upper() if agg_name.endswith("If") else agg_name.upper()
+
+    args = expression.expressions
+    if len(args) >= 2:
+        return self.sql(
+            exp.Filter(
+                this=exp.func(pg_func, args[0]),
+                expression=exp.Where(this=args[1]),
+            )
+        )
+
+    return self.function_fallback_sql(expression)
+
+
+
 def _serial_to_generated(expression: exp.Expr) -> exp.Expr:
     if not isinstance(expression, exp.ColumnDef):
         return expression
@@ -501,6 +530,8 @@ class Postgres(Dialect):
             exp.JSONObjectAgg: rename_func("JSON_OBJECT_AGG"),
             exp.JSONBObjectAgg: rename_func("JSONB_OBJECT_AGG"),
             exp.CountIf: count_if_to_sum,
+            # ClickHouse → PostgreSQL transpilation
+            exp.CombinedAggFunc: _combined_agg_func_to_filter,
         }
 
         TRANSFORMS.pop(exp.CommentColumnConstraint)

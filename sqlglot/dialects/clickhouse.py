@@ -388,7 +388,29 @@ class ClickHouse(Dialect):
         TRANSFORMS = {
             **generator.Generator.TRANSFORMS,
             exp.AnyValue: rename_func("any"),
+            exp.Case: lambda self, e: (
+                self.func(
+                    "multiIf",
+                    *[arg for if_ in e.args.get("ifs", []) for arg in (if_.this, if_.args.get("true"))],
+                    e.args.get("default"),
+                )
+                if e.args.get("ifs")
+                else super(type(self), self).case_sql(e)
+            ),
+            exp.Sub: lambda self, e: (
+                self.func("yesterday")
+                if isinstance(e.this, exp.CurrentDate)
+                and isinstance(e.expression, exp.Interval)
+                and e.expression.name == "1"
+                else super(type(self), self).sub_sql(e)
+            ),
             exp.If: lambda self, e: self.func("if", e.this, e.args.get("true"), e.args.get("false")),
+            exp.CombinedAggFunc: lambda self, e: self.anonymousaggfunc_sql(e),
+            exp.Count: lambda self, e: (
+                self.func("uniqExact", *e.this.expressions)
+                if isinstance(e.this, exp.Distinct)
+                else self.function_fallback_sql(e)
+            ),
             exp.ApproxDistinct: rename_func("uniq"),
             exp.ArrayDistinct: rename_func("arrayDistinct"),
             exp.ArrayConcat: rename_func("arrayConcat"),
@@ -415,7 +437,7 @@ class ClickHouse(Dialect):
             exp.ComputedColumnConstraint: lambda self, e: (
                 f"{'MATERIALIZED' if e.args.get('persisted') else 'ALIAS'} {self.sql(e, 'this')}"
             ),
-            exp.CurrentDate: lambda self, e: self.func("CURRENT_DATE"),
+            exp.CurrentDate: lambda self, e: self.func("today"),
             exp.CurrentVersion: rename_func("VERSION"),
             exp.DateAdd: _datetime_delta_sql("DATE_ADD"),
             exp.DateDiff: _datetime_delta_sql("DATE_DIFF"),
@@ -551,11 +573,26 @@ class ClickHouse(Dialect):
 
             return strtodate_sql
 
+        # ClickHouse idiomatic type conversion functions
+        _CAST_TO_FUNC = {
+            exp.DType.DATE: "toDate",
+            exp.DType.TEXT: "toString",
+            exp.DType.VARCHAR: "toString",
+            exp.DType.BIGINT: "toInt64",
+        }
+
         def cast_sql(self, expression: exp.Cast, safe_prefix: t.Optional[str] = None) -> str:
             this = expression.this
 
             if isinstance(this, exp.StrToDate) and expression.to == exp.DataType.build("datetime"):
                 return self.sql(this)
+
+            # Use idiomatic ClickHouse functions: toDate(), toString(), toInt64()
+            dtype = expression.to
+            if isinstance(dtype, exp.DataType):
+                ch_func = self._CAST_TO_FUNC.get(dtype.this)
+                if ch_func:
+                    return self.func(ch_func, this)
 
             return super().cast_sql(expression, safe_prefix=safe_prefix)
 
