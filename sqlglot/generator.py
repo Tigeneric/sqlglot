@@ -5578,6 +5578,16 @@ class Generator(metaclass=_Generator):
         return self.func(expression.name, *expression.expressions)
 
     def combinedaggfunc_sql(self, expression: exp.CombinedAggFunc) -> str:
+        # Default: sumIf(val, cond) → SUM(IF(cond, val, NULL))
+        # Dialects can override (e.g. PG uses FILTER, CH uses native sumIf)
+        agg_name = expression.this
+        if isinstance(agg_name, str) and agg_name.endswith("If"):
+            pg_func = agg_name[:-2].upper()
+            args = expression.expressions
+            if len(args) >= 2:
+                return self.sql(
+                    exp.func(pg_func, exp.If(this=args[1], true=args[0], false=exp.Null()))
+                )
         return self.anonymousaggfunc_sql(expression)
 
     def combinedparameterizedagg_sql(self, expression: exp.CombinedParameterizedAgg) -> str:
